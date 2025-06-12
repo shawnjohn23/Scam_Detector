@@ -1,0 +1,245 @@
+---
+title: "Fake_Detective"
+author: "Shawn"
+date: "2025-06-12"
+output: html_document
+---
+# preprocessing
+```{r}
+install.packages("tidyverse")
+install.packages("janitor")
+install.packages("stringr")
+install.packages("tidytext")
+install.packages("tm")
+```
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(tidytext)
+library(stringr)
+
+# Read in the data
+df <- read_csv("fake_job_postings.csv") %>%
+  clean_names() %>%
+  filter(!is.na(description), !is.na(title), !is.na(fraudulent)) %>%
+  mutate(row_id = row_number())  # Add a unique row ID for tracking
+
+# Clean description text
+df <- df %>%
+  mutate(description_clean = description %>%
+           str_to_lower() %>%
+           str_replace_all("[^a-z\\s]", " ") %>%
+           str_replace_all("\\s+", " ") %>%
+           str_trim())
+
+# Tokenize and remove stopwords
+data("stop_words")
+
+df_tokens <- df %>%
+  select(row_id, description_clean) %>%
+  unnest_tokens(word, description_clean) %>%
+  anti_join(stop_words, by = "word")
+
+# Recombine words per row
+df_cleaned_text <- df_tokens %>%
+  group_by(row_id) %>%
+  summarise(cleaned_description = paste(word, collapse = " "), .groups = "drop")
+
+# Join back to original dataframe
+df_final <- df %>%
+  left_join(df_cleaned_text, by = "row_id")
+
+# Save
+write_csv(df_final, "cleaned_job_postings.csv")
+
+```
+
+# EDA
+
+```{r}
+# Class balance
+df_final %>%
+  count(fraudulent) %>%
+  mutate(pct = n / sum(n) * 100)
+
+```
+```{r}
+df_final %>%
+  filter(fraudulent == 0)%>%
+  count(title, sort = TRUE) %>%
+  slice_max(n, n = 15) %>%
+  ggplot(aes(x = reorder(title, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 15 Real Job Titles", x = "Title", y = "Count") +
+  theme_minimal()
+```
+```{r}
+df_final %>%
+  filter(fraudulent == 1)%>%
+  count(title, sort = TRUE) %>%
+  slice_max(n, n = 15) %>%
+  ggplot(aes(x = reorder(title, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 15 Fake Job Titles", x = "Title", y = "Count") +
+  theme_minimal()
+```
+
+
+```{r}
+df_final %>%
+  filter(fraudulent == 0)%>%
+  count(location, sort = TRUE) %>%
+  filter(!is.na(location), location != "") %>%
+  slice_max(n, n = 15) %>%
+  ggplot(aes(x = reorder(location, n), y = n)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Top 15 Job Locations", x = "Location", y = "Count") +
+  theme_minimal()
+
+```
+```{r}
+df_final %>%
+  filter(fraudulent == 1)%>%
+  count(location, sort = TRUE) %>%
+  filter(!is.na(location), location != "") %>%
+  slice_max(n, n = 15) %>%
+  ggplot(aes(x = reorder(location, n), y = n)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Top 15 Job Locations", x = "Location", y = "Count") +
+  theme_minimal()
+```
+
+```{r}
+# Token frequency by class
+word_freq <- df_final %>%
+  select(fraudulent, cleaned_description) %>%
+  unnest_tokens(word, cleaned_description) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(fraudulent, word, sort = TRUE) %>%
+  group_by(fraudulent) %>%
+  slice_max(n, n = 15) %>%
+  ungroup()
+
+# Plot
+word_freq %>%
+  mutate(word = reorder_within(word, n, fraudulent)) %>%
+  ggplot(aes(word, n, fill = fraudulent)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~fraudulent, scales = "free") +
+  scale_x_reordered() +
+  coord_flip() +
+  labs(title = "Top Words in Real vs Fake Job Descriptions", x = "Word", y = "Frequency") +
+  theme_minimal()
+
+```
+```{r}
+# Distribution of remote/telecommuting roles by fraud label
+df_final %>%
+  filter(!is.na(telecommuting)) %>%
+  group_by(fraudulent, telecommuting) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = as.factor(telecommuting), y = count, fill = fraudulent)) +
+  geom_col(position = "dodge") +
+  labs(title = "Remote Job Distribution by Class", x = "Telecommuting (0 = No, 1 = Yes)", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+# Define helper function
+is_blank <- function(x) {
+  is.na(x) | str_trim(x) == ""
+}
+
+# Columns to check
+blank_cols <- c("company_profile", "requirements", "benefits", "industry", "function")
+
+# Filter to only non-fraudulent (real) jobs
+df_real <- df_final %>% filter(fraudulent == 0)
+
+# Calculate blank % for each field
+blank_summary_real <- map_dfr(blank_cols, function(col) {
+  df_real %>%
+    mutate(is_blank = is_blank(.data[[col]])) %>%
+    summarise(blank_count = sum(is_blank),
+              total = n(),
+              pct_blank = round(blank_count / total * 100, 1)) %>%
+    mutate(column = col)
+})
+
+# Plot
+blank_summary_real %>%
+  ggplot(aes(x = reorder(column, pct_blank), y = pct_blank)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Percent of Blank Fields in Real Job Postings",
+       x = "Field", y = "Percent Blank") +
+  theme_minimal()
+```
+```{r}
+# Define helper function
+is_blank <- function(x) {
+  is.na(x) | str_trim(x) == ""
+}
+
+# Columns to check
+blank_cols <- c("company_profile", "requirements", "benefits", "industry", "function")
+
+# Filter to only non-fraudulent (real) jobs
+df_real <- df_final %>% filter(fraudulent == 1)
+
+# Calculate blank % for each field
+blank_summary_real <- map_dfr(blank_cols, function(col) {
+  df_real %>%
+    mutate(is_blank = is_blank(.data[[col]])) %>%
+    summarise(blank_count = sum(is_blank),
+              total = n(),
+              pct_blank = round(blank_count / total * 100, 1)) %>%
+    mutate(column = col)
+})
+
+# Plot
+blank_summary_real %>%
+  ggplot(aes(x = reorder(column, pct_blank), y = pct_blank)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Percent of Blank Fields in Fake Job Postings",
+       x = "Field", y = "Percent Blank") +
+  theme_minimal()
+```
+
+
+```{r}
+# Compute word count
+df_lengths <- df_final %>%
+  mutate(description_length = str_count(description, "\\w+"))
+
+# Compare with a boxplot
+df_lengths %>%
+  ggplot(aes(x = fraudulent, y = description_length, fill = fraudulent)) +
+  geom_boxplot(alpha = 0.7, outlier.color = "red") +
+  labs(title = "Description Word Count by Job Type",
+       x = "Job Type", y = "Word Count") +
+  theme_minimal()
+
+```
+```{r}
+df_lengths %>%
+  group_by(fraudulent) %>%
+  summarise(mean = mean(description_length, na.rm = TRUE),
+            median = median(description_length, na.rm = TRUE),
+            sd = sd(description_length, na.rm = TRUE),
+            count = n())
+
+```
+Conclusion: Size of descriptions do not seem to have a difference. 
+
+```{r}
+
+```
+
